@@ -6,7 +6,7 @@ except ImportError:
 from functools import partial
 from collections import defaultdict, OrderedDict
 from six import string_types
-
+import time
 
 def listify(obj):
     if obj is None:
@@ -17,7 +17,7 @@ def listify(obj):
 
 class State(object):
 
-    def __init__(self, name, on_enter=None, on_exit=None,
+    def __init__(self, name, on_enter=None, on_exit=None, on_execute=None,
                  ignore_invalid_triggers=False):
         """
         Args:
@@ -36,6 +36,7 @@ class State(object):
         self.ignore_invalid_triggers = ignore_invalid_triggers
         self.on_enter = listify(on_enter) if on_enter else []
         self.on_exit = listify(on_exit) if on_exit else []
+        self.on_execute = listify(on_execute) if on_execute else []
 
     def enter(self, event_data):
         """ Triggered when a state is entered. """
@@ -48,6 +49,19 @@ class State(object):
         for oe in self.on_exit:
             event_data.machine.callback(
                 getattr(event_data.model, oe), event_data)
+
+    def execute(self, fsm, tick):
+        """ Triggered when a state is executing. """
+        if not self.on_execute:
+            return False
+
+        result = True
+        for oe in self.on_execute:
+            result = result and getattr(fsm.model, oe)(fsm, tick)
+            if not result:
+                break
+
+        return result
 
     def add_callback(self, trigger, func):
         """ Add a new enter or exit callback.
@@ -347,6 +361,9 @@ class Machine(object):
             if self != self.model and hasattr(
                     self.model, 'on_exit_' + state_name):
                 state.add_callback('exit', 'on_exit_' + state_name)
+            if self != self.model and hasattr(
+                    self.model, 'on_execute_' + state_name):
+                state.add_callback('execute', 'on_execute_' + state_name)
         # Add automatic transitions after all states have been created
         if self.auto_transitions:
             for s in self.states.keys():
@@ -434,6 +451,12 @@ class Machine(object):
         else:
             func(*event_data.args, **event_data.kwargs)
 
+    def update(self):
+        if self.current_state:
+            return self.current_state.execute(self, time.clock())
+
+        return False
+
     def __getattr__(self, name):
         terms = name.split('_')
         if terms[0] in ['before', 'after']:
@@ -442,7 +465,7 @@ class Machine(object):
                 raise MachineError('Event "%s" is not registered.' % name)
             return partial(self.events[name].add_callback, terms[0])
 
-        elif name.startswith('on_enter') or name.startswith('on_exit'):
+        elif name.startswith('on_enter') or name.startswith('on_exit') or name.startswith('on_execute'):
             state = self.get_state('_'.join(terms[2:]))
             return partial(state.add_callback, terms[1])
 
